@@ -1,0 +1,160 @@
+name: EduTech CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_CURSOS: ${{ secrets.DOCKERHUB_USERNAME }}/edutech-cursos-api
+  IMAGE_NOTIFICACIONES: ${{ secrets.DOCKERHUB_USERNAME }}/edutech-notificaciones
+  IMAGE_FRONTEND: ${{ secrets.DOCKERHUB_USERNAME }}/edutech-frontend
+
+jobs:
+  # ── Lint y tests ────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/cursos/api/package.json
+
+      - name: Install — Cursos API
+        working-directory: apps/cursos/api
+        run: npm install
+
+      - name: Test — Cursos API
+        working-directory: apps/cursos/api
+        run: npm test --if-present
+
+      - name: Install — Notificaciones
+        working-directory: apps/notificaciones
+        run: npm install
+
+      - name: Test — Notificaciones
+        working-directory: apps/notificaciones
+        run: npm test --if-present
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        working-directory: apps/evaluaciones/lambdas
+        run: pip install pymongo boto3 pytest
+
+      - name: Test — Lambdas
+        working-directory: apps/evaluaciones/lambdas
+        run: python -c "import crear_evaluacion; import obtener_resultado; print('Lambda imports OK')"
+
+  # ── Build y push Docker images ──────────────────────────────
+  build-push:
+    name: Build & Push Images
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login a Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push — Cursos API
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/cursos/api
+          push: true
+          tags: |
+            ${{ env.IMAGE_CURSOS }}:latest
+            ${{ env.IMAGE_CURSOS }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & Push — Notificaciones
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/notificaciones
+          push: true
+          tags: |
+            ${{ env.IMAGE_NOTIFICACIONES }}:latest
+            ${{ env.IMAGE_NOTIFICACIONES }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & Push — Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/cursos/frontend
+          push: true
+          tags: |
+            ${{ env.IMAGE_FRONTEND }}:latest
+            ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy en servidor ──────────────────────────────────────
+  deploy:
+    name: Deploy
+    needs: build-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy vía SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd /opt/edutech-platform
+            git pull origin main
+            echo "IMAGE_TAG=${{ github.sha }}" > .env.deploy
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker system prune -f
+
+      - name: Verificar health checks
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            sleep 20
+            curl -f http://localhost:8080/health/cursos || exit 1
+            curl -f http://localhost:8080/health/notificaciones || exit 1
+            echo "Deploy verificado OK"
+
+  # ── Notificación ────────────────────────────────────────────
+  notify:
+    name: Notificar resultado
+    needs: [test, build-push, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Resumen del pipeline
+        run: |
+          echo "## Pipeline EduTech" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests:** ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build:** ${{ needs.build-push.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deploy:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY

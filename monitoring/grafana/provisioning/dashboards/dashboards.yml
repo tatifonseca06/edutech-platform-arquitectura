@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: EduTech Dashboards
+    orgId: 1
+    folder: EduTech
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

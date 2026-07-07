@@ -1,0 +1,583 @@
+openapi: 3.0.3
+info:
+  title: EduTech Platform API
+  description: |
+    API REST de la plataforma educativa EduTech.
+    Centraliza tres microservicios a través del API Gateway Kong.
+
+    ## Servicios
+    - **Cursos** (Node.js/Express + PostgreSQL + Redis): gestión del catálogo e inscripciones
+    - **Evaluaciones** (AWS Lambda + Python + MongoDB): evaluaciones serverless
+    - **Notificaciones** (Node.js + RabbitMQ + MySQL): envío de emails transaccionales
+
+    ## Autenticación
+    Algunos endpoints requieren JWT Bearer token. Obtenlo en `/auth/login`.
+  version: 1.0.0
+  contact:
+    name: EduTech Team
+    email: dev@edutech.com
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: API Gateway local (Kong)
+  - url: https://api.edutech.com
+    description: Producción
+
+tags:
+  - name: Cursos
+    description: Gestión del catálogo de cursos
+  - name: Inscripciones
+    description: Inscripción de estudiantes a cursos
+  - name: Evaluaciones
+    description: Evaluaciones serverless (AWS Lambda)
+  - name: Notificaciones
+    description: Historial de notificaciones enviadas
+  - name: Health
+    description: Endpoints de salud del sistema
+
+paths:
+  /api/cursos:
+    get:
+      tags: [Cursos]
+      summary: Listar todos los cursos activos
+      description: Retorna la lista completa de cursos. Usa cache Redis (TTL 5 min).
+      parameters:
+        - name: categoria
+          in: query
+          schema:
+            type: string
+            example: programacion
+        - name: nivel
+          in: query
+          schema:
+            type: string
+            enum: [principiante, intermedio, avanzado]
+      responses:
+        '200':
+          description: Lista de cursos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source:
+                    type: string
+                    enum: [cache, db]
+                    example: cache
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Curso'
+              example:
+                source: cache
+                data:
+                  - id: "550e8400-e29b-41d4-a716-446655440000"
+                    titulo: "Introducción a Python"
+                    instructor: "Dr. Ana García"
+                    precio: 49.99
+                    nivel: principiante
+                    categoria: programacion
+                    duracion_horas: 40
+                    inscritos: 125
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Cursos]
+      summary: Crear un nuevo curso
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CursoInput'
+            example:
+              titulo: "Docker y Kubernetes"
+              descripcion: "Containerización y orquestación de microservicios"
+              instructor: "Ing. Laura Pérez"
+              precio: 79.99
+              duracion_horas: 50
+              nivel: intermedio
+              categoria: devops
+      responses:
+        '201':
+          description: Curso creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Curso'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/cursos/{id}:
+    get:
+      tags: [Cursos]
+      summary: Obtener detalle de un curso
+      description: Retorna un curso por ID. Usa cache Redis (TTL 5 min).
+      parameters:
+        - $ref: '#/components/parameters/CursoId'
+      responses:
+        '200':
+          description: Detalle del curso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source:
+                    type: string
+                    enum: [cache, db]
+                  data:
+                    $ref: '#/components/schemas/Curso'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/cursos/{id}/inscribir:
+    post:
+      tags: [Inscripciones]
+      summary: Inscribir un estudiante en un curso
+      description: |
+        Crea una inscripción y publica un evento en RabbitMQ (exchange `inscripcion.creada`)
+        para que el microservicio de notificaciones envíe el email de confirmación.
+      parameters:
+        - $ref: '#/components/parameters/CursoId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InscripcionInput'
+            example:
+              estudiante_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+              nombre_estudiante: "María García"
+              email_estudiante: "maria@ejemplo.com"
+      responses:
+        '201':
+          description: Inscripción creada exitosamente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Inscripción exitosa"
+                  data:
+                    $ref: '#/components/schemas/Inscripcion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: El estudiante ya está inscrito
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/cursos/{id}/inscripciones:
+    get:
+      tags: [Inscripciones]
+      summary: Listar inscripciones de un curso
+      parameters:
+        - $ref: '#/components/parameters/CursoId'
+      responses:
+        '200':
+          description: Lista de inscripciones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Inscripcion'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/evaluaciones:
+    post:
+      tags: [Evaluaciones]
+      summary: Crear y procesar una evaluación (AWS Lambda)
+      description: |
+        Endpoint serverless desplegado en AWS Lambda. Recibe las respuestas del estudiante,
+        calcula el puntaje y persiste el resultado en MongoDB Atlas.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluacionInput'
+            example:
+              cursoId: "550e8400-e29b-41d4-a716-446655440000"
+              estudianteId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+              respuestas:
+                p1: "b"
+                p2: "a"
+                p3: "c"
+                p4: "d"
+                p5: "a"
+      responses:
+        '202':
+          description: Evaluación procesada (aceptada para procesamiento)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluacionResultado'
+              example:
+                message: "Evaluación procesada exitosamente"
+                evaluacionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                puntaje: 80
+                aprobado: true
+                correctas: 4
+                totalPreguntas: 5
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/evaluaciones/{evaluacionId}:
+    get:
+      tags: [Evaluaciones]
+      summary: Obtener resultado de una evaluación (AWS Lambda)
+      parameters:
+        - name: evaluacionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      responses:
+        '200':
+          description: Resultado de la evaluación
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluacionResultado'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/notificaciones:
+    get:
+      tags: [Notificaciones]
+      summary: Listar historial de notificaciones
+      parameters:
+        - name: destinatario
+          in: query
+          schema:
+            type: string
+            format: email
+        - name: estado
+          in: query
+          schema:
+            type: string
+            enum: [pendiente, enviado, fallido]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: Lista de notificaciones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Notificacion'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/notificaciones/{id}:
+    get:
+      tags: [Notificaciones]
+      summary: Obtener una notificación por ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detalle de la notificación
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Notificacion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /health/cursos:
+    get:
+      tags: [Health]
+      summary: Health check del microservicio de Cursos
+      responses:
+        '200':
+          description: Servicio disponible
+          content:
+            application/json:
+              example:
+                status: ok
+                service: cursos-api
+                timestamp: "2024-01-15T10:30:00.000Z"
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /health/notificaciones:
+    get:
+      tags: [Health]
+      summary: Health check del microservicio de Notificaciones
+      responses:
+        '200':
+          description: Servicio disponible
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+components:
+  schemas:
+    Curso:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        titulo:
+          type: string
+          maxLength: 200
+        descripcion:
+          type: string
+        instructor:
+          type: string
+        precio:
+          type: number
+          format: float
+          minimum: 0
+        duracion_horas:
+          type: integer
+          minimum: 0
+        nivel:
+          type: string
+          enum: [principiante, intermedio, avanzado]
+        categoria:
+          type: string
+        activo:
+          type: boolean
+        inscritos:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    CursoInput:
+      type: object
+      required: [titulo, instructor]
+      properties:
+        titulo:
+          type: string
+          minLength: 3
+          maxLength: 200
+        descripcion:
+          type: string
+        instructor:
+          type: string
+        precio:
+          type: number
+          minimum: 0
+          default: 0
+        duracion_horas:
+          type: integer
+          minimum: 0
+          default: 0
+        nivel:
+          type: string
+          enum: [principiante, intermedio, avanzado]
+          default: principiante
+        categoria:
+          type: string
+          default: general
+
+    Inscripcion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        curso_id:
+          type: string
+          format: uuid
+        estudiante_id:
+          type: string
+          format: uuid
+        nombre_estudiante:
+          type: string
+        email_estudiante:
+          type: string
+          format: email
+        estado:
+          type: string
+          enum: [activa, completada, cancelada]
+        progreso:
+          type: integer
+          minimum: 0
+          maximum: 100
+        fecha_inscripcion:
+          type: string
+          format: date-time
+
+    InscripcionInput:
+      type: object
+      required: [estudiante_id, email_estudiante]
+      properties:
+        estudiante_id:
+          type: string
+          format: uuid
+        nombre_estudiante:
+          type: string
+        email_estudiante:
+          type: string
+          format: email
+
+    EvaluacionInput:
+      type: object
+      required: [cursoId, estudianteId, respuestas]
+      properties:
+        cursoId:
+          type: string
+          format: uuid
+        estudianteId:
+          type: string
+          format: uuid
+        respuestas:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            p1: "b"
+            p2: "a"
+
+    EvaluacionResultado:
+      type: object
+      properties:
+        message:
+          type: string
+        evaluacionId:
+          type: string
+          format: uuid
+        puntaje:
+          type: integer
+          minimum: 0
+          maximum: 100
+        aprobado:
+          type: boolean
+        correctas:
+          type: integer
+        totalPreguntas:
+          type: integer
+        fechaCreacion:
+          type: string
+          format: date-time
+
+    Notificacion:
+      type: object
+      properties:
+        id:
+          type: integer
+        tipo:
+          type: string
+          enum: [email, sms, push]
+        destinatario:
+          type: string
+        asunto:
+          type: string
+        estado:
+          type: string
+          enum: [pendiente, enviado, fallido]
+        intentos:
+          type: integer
+          minimum: 0
+        fecha_creacion:
+          type: string
+          format: date-time
+        fecha_envio:
+          type: string
+          format: date-time
+          nullable: true
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+  parameters:
+    CursoId:
+      name: id
+      in: path
+      required: true
+      description: UUID del curso
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+  responses:
+    BadRequest:
+      description: Parámetros inválidos
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "titulo e instructor son requeridos"
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "Curso no encontrado"
+    InternalError:
+      description: Error interno del servidor
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: Servicio no disponible (DB o dependencia caída)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

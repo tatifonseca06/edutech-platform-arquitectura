@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: EduTech Platform — App 2: Evaluaciones Serverless (AWS SAM)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        MONGO_ATLAS_URI: !Sub '{{resolve:secretsmanager:edutech/mongo:SecretString:uri}}'
+        MONGO_DB: edutech_evaluaciones
+    Layers:
+      - !Ref DependenciasLayer
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  # Capa de dependencias Python (pymongo)
+  DependenciasLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: edutech-python-deps
+      Description: pymongo y dependencias
+      ContentUri: layers/
+      CompatibleRuntimes:
+        - python3.12
+      RetentionPolicy: Retain
+
+  # Lambda: Crear evaluación
+  CrearEvaluacionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'edutech-crear-evaluacion-${StageName}'
+      CodeUri: lambdas/
+      Handler: crear_evaluacion.handler
+      Description: Recibe respuestas, calcula puntaje y persiste en MongoDB
+      Events:
+        CrearEvaluacion:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EduTechApi
+            Path: /evaluaciones
+            Method: POST
+        OptionsCrear:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EduTechApi
+            Path: /evaluaciones
+            Method: OPTIONS
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:edutech/mongo*'
+
+  # Lambda: Obtener resultado
+  ObtenerResultadoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'edutech-obtener-resultado-${StageName}'
+      CodeUri: lambdas/
+      Handler: obtener_resultado.handler
+      Description: Retorna el resultado de una evaluación desde MongoDB
+      Events:
+        ObtenerResultado:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EduTechApi
+            Path: /evaluaciones/{evaluacionId}
+            Method: GET
+        OptionsObtener:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EduTechApi
+            Path: /evaluaciones/{evaluacionId}
+            Method: OPTIONS
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:edutech/mongo*'
+
+  # API Gateway
+  EduTechApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'edutech-evaluaciones-api-${StageName}'
+      StageName: !Ref StageName
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+
+Outputs:
+  ApiUrl:
+    Description: URL del API Gateway de Evaluaciones
+    Value: !Sub 'https://${EduTechApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+    Export:
+      Name: !Sub 'EduTechEvaluacionesApiUrl-${StageName}'
+
+  CrearEvaluacionArn:
+    Description: ARN de la función CrearEvaluacion
+    Value: !GetAtt CrearEvaluacionFunction.Arn
+
+  ObtenerResultadoArn:
+    Description: ARN de la función ObtenerResultado
+    Value: !GetAtt ObtenerResultadoFunction.Arn
