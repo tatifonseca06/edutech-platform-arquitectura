@@ -25,6 +25,9 @@ servers:
   - url: https://api.edutech.com
     description: Producción
 
+x-kong-gateway:
+  description: Todos los endpoints pasan por Kong en puerto 8080. Rate-limit 100 req/min por IP.
+
 tags:
   - name: Cursos
     description: Gestión del catálogo de cursos
@@ -330,6 +333,22 @@ paths:
                     $ref: '#/components/schemas/Notificacion'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /health/evaluaciones:
+    get:
+      tags: [Health]
+      summary: Health check del microservicio de Evaluaciones
+      responses:
+        '200':
+          description: Servicio disponible
+          content:
+            application/json:
+              example:
+                status: ok
+                service: evaluaciones-local
+                timestamp: "2024-01-15T10:30:00.000Z"
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /health/cursos:
     get:

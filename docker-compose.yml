@@ -21,6 +21,10 @@ services:
     depends_on:
       app-cursos:
         condition: service_healthy
+      app-evaluaciones:
+        condition: service_healthy
+      app-notificaciones:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 30s
@@ -62,6 +66,28 @@ services:
       - edutech-net
     depends_on:
       - app-cursos
+
+  # App 2: Evaluaciones (simula AWS Lambda localmente para desarrollo/demo)
+  app-evaluaciones:
+    build: ./apps/evaluaciones/local
+    environment:
+      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/${MONGO_DB}?authSource=admin
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_DB: ${MONGO_DB}
+      PORT: 3003
+    ports:
+      - "3003:3003"
+    networks:
+      - edutech-net
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   app-notificaciones:
     build: ./apps/notificaciones
@@ -170,6 +196,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Swagger UI — sirve la documentación OpenAPI en localhost:8085
+  swagger-ui:
+    image: swaggerapi/swagger-ui
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+      BASE_URL: /docs-ui
+    volumes:
+      - ./docs:/spec:ro
+    ports:
+      - "8085:8080"
+    networks:
+      - edutech-net
 
   nginx:
     image: nginx:alpine

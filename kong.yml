@@ -2,6 +2,7 @@ _format_version: "3.0"
 _transform: true
 
 services:
+  # ── App 1: Cursos ──────────────────────────────────────────────────────────
   - name: cursos-service
     url: http://app-cursos:3001
     connect_timeout: 10000
@@ -47,6 +48,41 @@ services:
           bandwidth_metrics: true
           upstream_health_metrics: true
 
+  # ── App 2: Evaluaciones (local Docker) ────────────────────────────────────
+  - name: evaluaciones-service
+    url: http://app-evaluaciones:3003
+    connect_timeout: 10000
+    read_timeout: 60000
+    write_timeout: 60000
+    routes:
+      - name: evaluaciones-route
+        paths:
+          - /api/evaluaciones
+        strip_path: false
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+          credentials: false
+
+  # ── App 3: Notificaciones ──────────────────────────────────────────────────
   - name: notificaciones-service
     url: http://app-notificaciones:3002
     routes:
@@ -77,16 +113,7 @@ services:
             - Content-Type
           credentials: false
 
-  - name: docs-service
-    url: http://app-cursos:3001
-    routes:
-      - name: docs-route
-        paths:
-          - /docs
-        strip_path: false
-        methods:
-          - GET
-
+  # ── Health checks por servicio ─────────────────────────────────────────────
   - name: health-cursos
     url: http://app-cursos:3001
     routes:
@@ -94,11 +121,18 @@ services:
         paths:
           - /health/cursos
         strip_path: true
-    plugins:
-      - name: request-transformer
-        config:
-          replace:
-            uri: /health
+        methods:
+          - GET
+
+  - name: health-evaluaciones
+    url: http://app-evaluaciones:3003
+    routes:
+      - name: health-evaluaciones-route
+        paths:
+          - /health/evaluaciones
+        strip_path: true
+        methods:
+          - GET
 
   - name: health-notificaciones
     url: http://app-notificaciones:3002
@@ -107,12 +141,21 @@ services:
         paths:
           - /health/notificaciones
         strip_path: true
-    plugins:
-      - name: request-transformer
-        config:
-          replace:
-            uri: /health
+        methods:
+          - GET
 
+  # ── Swagger UI via Kong ────────────────────────────────────────────────────
+  - name: swagger-service
+    url: http://swagger-ui:8080
+    routes:
+      - name: swagger-route
+        paths:
+          - /docs
+        strip_path: false
+        methods:
+          - GET
+
+# Plugin global: métricas Prometheus para todo el gateway
 plugins:
   - name: prometheus
     config:

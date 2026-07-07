@@ -35,19 +35,16 @@
                         │   Rate Limiting · CORS · JWT · Prometheus plugin     │
                         └──────┬──────────────────┬──────────────────┬─────────┘
                                │                  │                  │
-               ┌───────────────▼──┐  ┌────────────▼────────┐  ┌────▼───────────────┐
-               │   App 1: CURSOS  │  │  App 2: EVALUACIONES│  │ App 3: NOTIFICACIONES│
-               │  Node.js/Express │  │  AWS Lambda (Python) │  │   Node.js Workers   │
-               │  Next.js Frontend│  │  POST /evaluaciones  │  │   RabbitMQ consumer │
+               ┌───────────────▼──┐  ┌─────────────▼───────┐  ┌────▼───────────────┐
+               │   App 1: CURSOS  │  │ App 2: EVALUACIONES │  │ App 3: NOTIFICACIONES│
+               │  Node.js/Express │  │ Node.js:3003 (local)│  │   Node.js Workers   │
+               │  Next.js Frontend│  │ AWS Lambda (prod)   │  │   RabbitMQ consumer │
                └──────┬───────────┘  └────────┬────────────┘  └────────┬────────────┘
                       │                        │                         │
-              ┌───────▼────┐         ┌─────────▼────┐          ┌────────▼────┐
-              │ PostgreSQL │  Redis  │   MongoDB    │          │    MySQL    │
-              │  (Docker)  │◄───────┤   (Docker)   │          │   (Docker)  │
-              └────────────┘ Cache  └──────────────┘          └─────────────┘
-                                                    ▲
-                                      RabbitMQ ─────┘
-                                      (fanout exchange)
+              ┌───────▼────┐  ┌─────┐  ┌──────▼────┐          ┌────────▼────┐
+              │ PostgreSQL │  │Redis│  │  MongoDB  │  RabbitMQ │    MySQL    │
+              │  (Docker)  │◄─┤Cache│  │  (Docker) │◄──────────┤   (Docker)  │
+              └────────────┘  └─────┘  └───────────┘  fanout  └─────────────┘
 ```
 
 ---
@@ -71,16 +68,19 @@
 | GET | `/api/cursos/:id/inscripciones` | Listar inscripciones |
 
 ### App 2 — Evaluaciones Serverless (AWS Lambda + Python)
-- **Runtime:** Python 3.12 en AWS Lambda
-- **Framework:** AWS SAM (Serverless Application Model)
-- **Base de datos:** MongoDB (Docker para dev, Atlas para prod)
-- **Patrón:** Serverless / FaaS — sin servidor que administrar
+- **Local (Docker):** `apps/evaluaciones/local/` — Express.js que simula las Lambdas, puerto 3003
+- **Producción:** AWS Lambda Python 3.12 + AWS SAM (`template.yaml`)
+- **Base de datos:** MongoDB 7 (Docker para dev, Atlas para prod)
+- **Patrón:** Serverless / FaaS — escala automáticamente con la demanda
 
-**Lambdas:**
-| Lambda | Trigger | Descripción |
-|--------|---------|-------------|
-| `crear_evaluacion` | POST `/evaluaciones` | Recibe respuestas, calcula puntaje, persiste en MongoDB |
-| `obtener_resultado` | GET `/evaluaciones/{id}` | Retorna resultado desde MongoDB |
+> La app corre en Docker localmente con `app-evaluaciones:3003` y se despliega como Lambda real con `sam deploy` para producción.
+
+**Endpoints (expuestos por Kong `/api/evaluaciones`):**
+| Método | Path | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/evaluaciones` | Recibe respuestas, calcula puntaje, persiste en MongoDB → HTTP 202 |
+| `GET` | `/api/evaluaciones/:id` | Retorna resultado desde MongoDB |
+| `GET` | `/api/evaluaciones` | Lista evaluaciones (filtrable por estudianteId, cursoId) |
 
 ### App 3 — Notificaciones (RabbitMQ + Workers)
 - **Workers:** Node.js consumidor de RabbitMQ
@@ -442,43 +442,42 @@ push → main
 ### Requisitos
 - Docker Desktop 4.x
 - Docker Compose v2
-- Node.js 20+ (para desarrollo local)
-- Python 3.12+ (para Lambdas local)
-- AWS SAM CLI (para deploy de Lambdas)
+- AWS SAM CLI (solo para deploy de Lambdas en producción)
 
 ### Levantar todo con Docker Compose
 
 ```bash
 # 1. Clonar el repositorio
-git clone <repo-url>
-cd edutech-platform
+git clone https://github.com/tatifonseca06/edutech-platform-arquitectura
+cd edutech-platform-arquitectura
 
 # 2. Copiar variables de entorno
 cp .env.example .env
-# Editar .env con tus credenciales reales (SendGrid, etc.)
+# Para demo funciona con los valores por defecto.
+# Editar SENDGRID_API_KEY solo si se quiere envío real de emails.
 
-# 3. Levantar toda la infraestructura
+# 3. Levantar toda la infraestructura (10 servicios + monitoreo)
 docker compose up -d
 
-# 4. Verificar que todos los servicios estén healthy
+# 4. Esperar que todos los servicios estén healthy (~60 segundos)
 docker compose ps
 
-# 5. Verificar API Gateway
+# 5. Verificar los 3 microservicios vía API Gateway
 curl http://localhost:8080/health/cursos
+curl http://localhost:8080/health/evaluaciones
 curl http://localhost:8080/health/notificaciones
-
-# 6. Acceder al frontend
-open http://localhost:3000
-
-# 7. Ver documentación API
-open http://localhost:8080/docs
-
-# 8. Grafana dashboards
-open http://localhost:3003   # admin / admin123
-
-# 9. RabbitMQ Management
-open http://localhost:15672  # usuario/contraseña del .env
 ```
+
+### URLs de acceso
+
+| Servicio | URL | Descripción |
+|---|---|---|
+| Frontend | http://localhost:3000 | Catálogo de cursos e inscripciones |
+| API Gateway | http://localhost:8080 | Punto único de entrada REST |
+| Swagger UI | http://localhost:8085 | Documentación interactiva de la API |
+| Grafana | http://localhost:3003 | Dashboards de monitoreo (admin/admin123) |
+| RabbitMQ UI | http://localhost:15672 | Gestión de colas y mensajes |
+| Prometheus | http://localhost:9090 | Métricas raw |
 
 ### Deploy de Lambdas a AWS
 
@@ -546,9 +545,13 @@ edutech-platform/
 │   │
 │   ├── evaluaciones/
 │   │   ├── lambdas/
-│   │   │   ├── crear_evaluacion.py   # Lambda principal
-│   │   │   └── obtener_resultado.py  # Lambda consulta
-│   │   ├── template.yaml             # AWS SAM
+│   │   │   ├── crear_evaluacion.py   # Lambda producción (AWS)
+│   │   │   └── obtener_resultado.py  # Lambda producción (AWS)
+│   │   ├── local/                    # Wrapper Docker para desarrollo
+│   │   │   ├── server.js             # Express que simula las Lambdas
+│   │   │   ├── package.json
+│   │   │   └── Dockerfile
+│   │   ├── template.yaml             # AWS SAM (deploy producción)
 │   │   └── db/init-mongo.js          # Índices MongoDB
 │   │
 │   └── notificaciones/

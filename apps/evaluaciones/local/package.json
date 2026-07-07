@@ -1,0 +1,16 @@
+{
+  "name": "edutech-evaluaciones-local",
+  "version": "1.0.0",
+  "description": "Wrapper Express local que simula las Lambdas de evaluaciones para desarrollo Docker",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "mongodb": "^6.5.0",
+    "prom-client": "^15.1.0",
+    "uuid": "^9.0.0"
+  }
+}

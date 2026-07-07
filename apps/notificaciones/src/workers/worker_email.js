@@ -7,7 +7,8 @@ const QUEUE_NAME = 'notificaciones.email';
 const DLQ_NAME = 'notificaciones.email.dlq';
 const MAX_INTENTOS = 3;
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const DEV_MODE = !process.env.SENDGRID_API_KEY || process.env.SENDGRID_API_KEY.startsWith('SG.xxx');
+if (!DEV_MODE) sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 let dbPool;
 async function getPool() {
@@ -70,12 +71,17 @@ async function procesarMensaje(channel, msg, pool) {
   console.log(`[worker-email] Procesando mensaje (intento ${intentos}):`, datos.inscripcion_id);
 
   try {
-    await sgMail.send({
-      to: datos.email_estudiante,
-      from: process.env.FROM_EMAIL,
-      subject: `¡Inscripción confirmada! - ${datos.curso_titulo}`,
-      html: buildEmailHTML(datos),
-    });
+    if (DEV_MODE) {
+      // Modo desarrollo: simular envío sin SendGrid real
+      console.log(`[worker-email][DEV] Email simulado → ${datos.email_estudiante} | Curso: ${datos.curso_titulo}`);
+    } else {
+      await sgMail.send({
+        to: datos.email_estudiante,
+        from: process.env.FROM_EMAIL,
+        subject: `¡Inscripción confirmada! - ${datos.curso_titulo}`,
+        html: buildEmailHTML(datos),
+      });
+    }
 
     await guardarNotificacion(pool, datos, 'enviado', intentos);
     channel.ack(msg);
